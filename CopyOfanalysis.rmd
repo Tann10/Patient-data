@@ -50,24 +50,17 @@ loadPkg("lubridate")
 
 Reading data ..
 ```{r}
-#raw_df <- read_excel('master-data.xlsx',sheet='Sheet1')
 raw_df <- read_excel('GWG(2+)_Corrected.5.10.20(lowcount).xlsx',sheet='master')
-view(raw_df %>% filter(`Dim Patient` == "ref:Patient/BabyscriptsLegacy#13292"))
-raw_df2 <- read_excel('GWG.xlsx',sheet='master')
 
 test_pt <- read_excel('test_patients_exclude.xlsx')
 names(test_pt) <- str_replace_all(names(test_pt), c(" " = "_"))
-length(unique(test_pt$Dim_Patient))
 
 # if space in the column name change to underscore
-names(raw_df2) <- str_replace_all(names(raw_df2), c(" " = "_"))
 names(raw_df) <- str_replace_all(names(raw_df), c(" " = "_"))
 
 
 dim(raw_df)
 length(unique(raw_df$Dim_Patient))
-
-length(unique(raw_df2$Dim_Patient))
 
 ```
 
@@ -87,9 +80,6 @@ df <- raw_df %>% drop_na(Dim_Patient)
 df <- df %>% filter(Dim_Patient !=0)
 dim(df)
 length(unique(df$Dim_Patient))
-df2 <- raw_df2 %>% drop_na(Observation_Value)
-dim(df2)
-length(unique(df2$Dim_Patient))
 ```
 
 Remove duplicate rows:
@@ -97,7 +87,7 @@ Remove duplicate rows:
 df$date <- as.Date(df$Observed_At)
 
 # remove diff column as it will be recalculated again
-df <-subset(df,select = - c(Weight_Difference, Days_Since_Last_Entry, Observed_At,Trimester))
+df <-subset(df,select = - c(Weight_Difference, Days_Since_Last_Entry))
 
 
 # drop duplicates
@@ -106,7 +96,7 @@ df <- unique(df)
 # merge corrected low count df
 low_count <- read_excel('original_df.xlsx')
 low_count$date <- as.Date(low_count$Observed_At)
-low_count <-subset(low_count,select = - c(Observed_At, Trimester))
+low_count <-subset(low_count,select = - c(Trimester))
 
 df_low_count_rm <- df %>% filter(!Dim_Patient %in% low_count$Dim_Patient)
 
@@ -118,7 +108,7 @@ df <- rbind(df_low_count_rm, low_count)
 # GTA column has missing values 
 sum(is.na(df))
 # filter rows having GTA as null
-gat_null <- df %>% filter(is.na(EDD))
+gat_null <- df %>% filter(is.na(GA_at_Observation))
 
 # time being drop those columns 
 df <-df %>% drop_na(EDD)
@@ -170,11 +160,11 @@ length(unique(df$Dim_Patient))
 Remove patients having only 3 or less observations and only one trimester data 
 ```{r}
 # get only trimester values at patient-trimester level
-dpt <- df %>% select(Dim_Patient, trimester) %>% distinct(Dim_Patient, trimester)
+dpt <- df %>% select(Dim_Patient, Trimester) %>% distinct(Dim_Patient, Trimester)
 # check how many patients have length
-agg <- aggregate(data=dpt, trimester ~ Dim_Patient, function(x) length(unique(x)))
+agg <- aggregate(data=dpt, Trimester ~ Dim_Patient, function(x) length(unique(x)))
 
-less_data <- agg %>% filter(trimester == 1)
+less_data <- agg %>% filter(Trimester == 1)
 
 length(unique(less_data$Dim_Patient))
 
@@ -195,7 +185,7 @@ length(unique(df$Dim_Patient))
 ```
 Remove entries if less than 2 observations within a day
 ```{r}
-intermediate_rollup <- df %>% group_by(Dim_Patient, date) %>% summarise(mean = mean(Observation_Value))
+intermediate_rollup <- df %>% group_by(Dim_Patient, Observed_At) %>% summarise(mean = mean(Observation_Value))
 #view(intermediate_rollup %>% group_by(Dim_Patient)  %>% count() %>% filter(n < 3))
 # remove entries if less than 2
 
@@ -208,7 +198,7 @@ length(unique(df$Dim_Patient))
 Calculate trimester and days since column
 ```{r}
 df <- df %>% group_by(Dim_Patient) %>% 
-  arrange(Dim_Patient, date) %>%
+  arrange(Dim_Patient, Observed_At) %>%
   mutate(days_since = c(0,diff(date)))
 ```
 
@@ -217,7 +207,10 @@ df <- df %>% group_by(Dim_Patient) %>%
 count_rows <- df %>% group_by(Dim_Patient, date) %>%  
   summarise(wt = mean(Observation_Value)) %>% ungroup() %>%  
   group_by(Dim_Patient) %>% summarise(initial_count = n())
+
 ```
+
+
 
 Outlier detection box plot method
 ```{r}
@@ -256,20 +249,19 @@ plot_ly(ggplot2::diamonds, y = ~p1$Observation_Value, color = ~p1$Dim_Patient, t
 
 Day level check if value greater than 5
 ```{r}
-p2 <- df %>% filter(Dim_Patient == "ref:Patient/BabyscriptsLegacy#5387")
-
+p2 <- df %>% filter(Dim_Patient == "ref:Patient/BabyscriptsLegacy#2043")
 
   
-daily <- p2 %>% group_by(Dim_Patient, date) %>% arrange(Dim_Patient, date) %>%
+daily <- df %>% group_by(Dim_Patient, date) %>% arrange(Dim_Patient, Observed_At) %>%
   mutate(weight_diff = c(0,diff(Observation_Value)), 
-         wt_flg =  ifelse((abs(weight_diff) >= 5) & (trimester != "PP"), NA, Observation_Value))  %>% ungroup() %>% filter(!is.na(wt_flg))
+         wt_flg =  ifelse((abs(weight_diff) >= 5) & (Trimester != "PP"), NA, Observation_Value))  %>% ungroup() %>% filter(!is.na(wt_flg))
 
 
-weekly <- daily %>% group_by(Dim_Patient, trimester) %>% arrange(Dim_Patient, date) %>%
+weekly <- daily %>% group_by(Dim_Patient, Trimester) %>% arrange(Dim_Patient, Observed_At) %>%
   mutate(weight_diff_tri = c(0,diff(Observation_Value)), 
          mode_wt_tri = getmode(Observation_Value),
          diff = Observation_Value - mode_wt_tri,
-         wt_flg_tri =  ifelse((days_since <= 70) & (abs(diff) >= 15) & (trimester != "PP"), NA, Observation_Value)) %>%
+         wt_flg_tri =  ifelse((days_since <= 70) & (abs(diff) >= 15) & (Trimester != "PP"), NA, Observation_Value)) %>%
   filter(!is.na(wt_flg_tri))%>% 
   ungroup() %>% 
   group_by(Dim_Patient) %>% 
@@ -277,11 +269,11 @@ weekly <- daily %>% group_by(Dim_Patient, trimester) %>% arrange(Dim_Patient, da
   filter(!is.na(mode_dev))
 
 
-complete <- weekly %>% group_by(Dim_Patient, trimester) %>% 
+complete <- weekly %>% group_by(Dim_Patient, Trimester) %>% 
   mutate( avg = mean(Observation_Value)) %>% 
   ungroup() %>% 
   group_by(Dim_Patient) %>% 
-  mutate(diff_avg =ifelse((abs(Observation_Value - avg[1]) >= 20) & (trimester == "PP"), NA, Observation_Value)) %>% 
+  mutate(diff_avg =ifelse((abs(Observation_Value - avg[1]) >= 20) & (Trimester == "PP"), NA, Observation_Value)) %>% 
   filter(!is.na(diff_avg))
 
 # calculate trimester
@@ -290,22 +282,16 @@ count_2 <- complete %>% group_by(Dim_Patient, date) %>%
   summarise(wt = mean(Observation_Value)) %>% ungroup() %>%  
   group_by(Dim_Patient) %>% summarise(after_count = n())
 
-pt_lessthan100 <- complete %>% filter((Observation_Value) < 100) 
 
 
-#view(df %>% filter(Dim))
-pt_lessthan100_2 <- df %>% filter(Dim_Patient %in% pt_lessthan100$Dim_Patient)
-
-write.csv(pt_lessthan100_2, "pt_lessthan100_2.csv")
-#count_rows <- count_rows %>% mutate(bpt_per_removed = ((initial_count - bpt_count)/initial_count) * 100)
 
 count_rows <- merge(count_rows, count_2, by = "Dim_Patient") 
 
 count_rows <- count_rows %>% mutate(per_removed = ((initial_count - after_count)/initial_count) * 100)
 
-low <- count_rows %>% filter(per_removed  > 50)
+low <- count_rows %>% filter(per_removed  > 70)
 
-write.csv(low, "low_count2.csv")
+write.csv(low, "low_check2.csv")
 
 df_rm <- complete %>% group_by(Dim_Patient, date, week, days) %>% summarise(wt_avg = mean(Observation_Value))
 
