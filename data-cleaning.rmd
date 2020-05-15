@@ -203,19 +203,33 @@ df <- df %>% group_by(Dim_Patient) %>%
 ```
 
 
-```{r}
-# count initial values
-count_rows <- df %>% group_by(Dim_Patient, date) %>%  
-  summarise(wt = mean(Observation_Value)) %>% ungroup() %>%  
-  group_by(Dim_Patient) %>% summarise(initial_count = n())
-```
 
+Keep the manually cleaned data
+```{r}
+man_cl1 <- read_xlsx('low_count.xlsx')
+keep1 <- man_cl1 %>% filter((Resolution == "KEEP")| (Resolution == "keep"))
+
+man_cl2 <- read_xlsx('low_count2.xlsx')
+keep2 <- man_cl2 %>% filter((Resolution == "KEEP") | (Resolution == "keep"))
+
+manually_rm_out <- df %>% filter((Dim_Patient %in% keep1$Dim_Patient) | (Dim_Patient %in% keep2$Dim_Patient))
+
+
+length(unique(manually_rm_out$Dim_Patient))
+```
 
 Day level check if value greater than 5
 ```{r}
-p2 <- df %>% filter(Dim_Patient == "ref:Patient/BabyscriptsLegacy#5387")
+#p2 <- df %>% filter(Dim_Patient == "ref:Patient/BabyscriptsLegacy#5387")
 
-daily <- df %>% group_by(Dim_Patient, date) %>% arrange(Dim_Patient, date) %>%
+out_rm <- df %>% filter(!(Dim_Patient %in% manually_rm_out$Dim_Patient))
+
+# count initial values
+count_rows <- out_rm %>% group_by(Dim_Patient, date) %>%  
+  summarise(wt = mean(Observation_Value)) %>% ungroup() %>%  
+  group_by(Dim_Patient) %>% summarise(initial_count = n())
+
+daily <- out_rm %>% group_by(Dim_Patient, date) %>% arrange(Dim_Patient, date) %>%
   mutate(weight_diff = c(0,diff(Observation_Value)), 
          wt_flg =  ifelse((abs(weight_diff) >= 5) & (trimester != "PP"), NA, Observation_Value))  %>% ungroup() %>% filter(!is.na(wt_flg))
 
@@ -247,236 +261,47 @@ count_2 <- complete %>% group_by(Dim_Patient, date) %>%
 count_rows <- merge(count_rows, count_2, by = "Dim_Patient") 
 
 count_rows <- count_rows %>% mutate(per_removed = ((initial_count - after_count)/initial_count) * 100)
+```
 
+
+Remove low count and add manually filtered data back to the cleaned df
+```{r}
 low <- count_rows %>% filter(per_removed  > 50)
 
-write.csv(low, "low_count2.csv")
-
-df_rm <- complete %>% group_by(Dim_Patient, date, week, days) %>% summarise(wt_avg = mean(Observation_Value))
-
-df_rm_out <- complete %>% group_by(Dim_Patient, date, week, days) %>% summarise(wt_avg = mean(Observation_Value)) %>% ungroup() %>% group_by(Dim_Patient) %>% count() %>% filter(n > 2)
+cleaned_df <- complete %>% filter(!(Dim_Patient %in% low$Dim_Patient)) %>% 
+  select(Dim_Patient, Observation_Source, Observation_Value, EDD, GA_at_Observation, date, week, trimester, days_since)
 
 
-initial_wt <- df_rm %>% group_by(Dim_Patient) %>% 
+processed_df <- rbind(cleaned_df, manually_rm_out)
+```
+
+
+Roll up the data at a day level and remove observations less than 2
+```{r}
+day_level<- processed_df %>% group_by(Dim_Patient, trimester, Observation_Source, date, week, days) %>% summarise(wt_avg = mean(Observation_Value))
+
+lessthan_2 <- day_level %>% group_by(Dim_Patient) %>% count() %>% filter(n < 3)
+
+day_level <- day_level %>% filter(!Dim_Patient %in% lessthan_2$Dim_Patient)
+```
+
+
+Check first and last week difference in weights
+```{r}
+
+initial_wt <- day_level %>% group_by(Dim_Patient) %>% 
   arrange(Dim_Patient, date) %>% filter(row_number()==1 | row_number()==n()) %>%  arrange(Dim_Patient, date) %>% mutate(weight_diff_tri = c(0,diff(wt_avg)), week_diff = c(0,diff(week)))
 
-view(initial_wt %>% filter(wt_avg <100))
-
-last_wt <- df_rm %>% group_by(Dim_Patient) %>% arrange(Dim_Patient, date)
-
-original_df <- df %>% filter(Dim_Patient %in% low$Dim_Patient)
-processed_df <- complete %>% filter(Dim_Patient %in% low$Dim_Patient)
-
-write.csv(df, "df.csv")
-write.csv(original_df, "original_df2.csv")
-write.csv(processed_df, "processed_df.csv")
-
-# checked values ref:Patient/Athena#13122|1577959, ref:Patient/Athena#13122|1596992, ref:Patient/Athena#13122|1666573(removes only one entry, )
-
-view(complete %>% filter(Dim_Patient == "ref:Patient/Athena#13122|1596992"))
-view(boxpt %>% filter(Dim_Patient == "ref:Patient/BabyscriptsLegacy#16415"))
-
-(dim(df)[1] - dim(complete)[1]) / dim(df)[1] * 100
-
-write.csv(weekly, "check.csv")
-
-write.csv(df, "outliers_present.csv")
-
-write.csv(count_rows, "count_rows.csv")
-
-write.csv(low, "low_count.csv")
-
-
-
-
 ```
 
 
-
-```{r}
-# set the right baseline
-
-
-initial_weight <- df %>% arrange(Dim_Patient, Observed_At) %>% group_by(Dim_Patient, GA_at_Observation) %>% filter(week == min(week)) %>% mutate(mode_wtt = getmode(Observation_Value))
-
-
-write_csv(initial_weight, "initial_weight.csv")
-
-view(initial_weight %>% group_by(Dim_Patient) %>% count() %>% filter(n>1))
-
-```
-
-Now, check if difference between the trimester is not greater than 15, remove those rows if greater than 15
-
+Merge Age, height and calculate BMI
 ```{r}
 
 
-
-
-p1 = df %>% filter(Dim_Patient == "ref:Patient/BabyscriptsLegacy#1037")
-
-remove_outliers <- function(df){
-
-  print(dim(df))
-  #check <- df %>% group_by(Dim_Patient, GA_at_Observation) %>% arrange(Observed_At) %>% mutate(mode = getmode(Observation_Value)) 
-  
-  
-  check2 <- df %>% group_by(Dim_Patient) %>% arrange(Observed_At) %>% mutate(weight_diff = c(0,diff(Observation_Value)))
-  
-  check2 <- check2 %>% group_by(Dim_Patient, Trimester) %>% arrange(Observed_At) %>% mutate(weight_updated = ifelse( (abs(weight_diff) >= 15) &(Trimester != "PP"),NA, Observation_Value))
-    
-  check3 <- check2 %>% filter(!is.na(weight_updated))
-  return(check3) 
-  }
-
-diff <- 1000
-check <- df
-
-p1 <- df %>% filter((Dim_Patient == "ref:Patient/BabyscriptsLegacy#4003") & (Observation_Value == 88.85))
-
-df2 <- anti_join(df, p1, by = c("Dim_Patient","Observed_At"))
-
-check <- df2 %>% group_by(Dim_Patient) %>% arrange(Observed_At) %>% mutate(weight_diff = c(0,diff(Observation_Value)))
-
-while(diff >=15)
-{
-  check <- check %>% group_by(Dim_Patient, Trimester) %>% arrange(Observed_At) %>% mutate(weight_updated = ifelse((abs(weight_diff) >= 15) &(Trimester != "PP"),NA, Observation_Value))
-    
-  check <- check %>% filter(!is.na(weight_updated))
-  
-  check <- check %>% group_by(Dim_Patient) %>% arrange(Observed_At) %>% mutate(weight_diff = c(0,diff(Observation_Value)))
-
-  sub <- check %>% filter(Trimester != "PP")
-  diff <- max(abs(sub$weight_diff))
-  print(diff)
-}
-
-
-length(unique(check$Dim_Patient))
-length(unique(df$Dim_Patient))
-
-dim(df) - dim(check)
-
-write.csv(check, "cleaned_df.csv")
-
-  
-ct <- check %>% group_by(Dim_Patient) %>% count() %>% filter(n <3)
-
-
-length(unique(check8$Dim_Patient))
-
-ct <- check %>% filter((Trimester == "PP") & (weight_diff >25))
-
-view(df %>% filter(Dim_Patient == "ref:Patient/BabyscriptsLegacy#1163"))
-
-#df$weight_diff = ifelse(df$initial_weight == df$weight_diff, 0, df$weight_diff)
-
-check <- df %>% group_by(Dim_Patient, Trimester) %>% filter(weight_diff > 15)
-
-
-
-length(unique(df$Dim_Patient))
-
 ```
 
 
-
-```{r}
-initial_weight <- df %>% arrange(Dim_Patient, Observed_At) %>% group_by(Dim_Patient) %>%  slice(1) %>% select(Dim_Patient, Observation_Value) %>% rename(
-    "initial_weight" = Observation_Value)
-  
-df <- merge(df, initial_weight,
-              by.x= c("Dim_Patient"),
-              by.y= c("Dim_Patient"),
-              all.x =T)
-
-func <- function(x) {
-  
-  w_diff <- c(0, diff(Observation_Value))>15
-  
-  weight_diff = ifelse(,0, weight_diff)
-}
-
-
-
-
-
-```
-
-
-Remove if weeks are negative or greater than 50
-```{r}
-
-df$Trimester <- as.factor(df$Trimester)
-
-
-# <0, >50, observations > 250
-df <- df %>% filter((week >0) & (week < 50))
-length(unique(df$Dim_Patient))
-
-```
-
-
-get min value of the observed at column for a patient
-```{r}
-# filter values, if weight is > 60% inital, (> %150 of final)
-initial_weight <- df %>% arrange(Dim_Patient, Observed_At) %>% group_by(Dim_Patient) %>%  slice(1) %>% select(Dim_Patient, Observation_Value) %>% rename(
-    "initial_weight" = Observation_Value)
-  
-
-#check4 <- dm %>% filter(Weight_Difference != 0.0)
-
-#view(df %>% filter(Dim_Patient == "ref:Patient/BabyscriptsLegacy#2265"))
-
-length(unique(check3$Dim_Patient))
-  
-df <- merge(df, initial_weight,
-              by.x= c("Dim_Patient"),
-              by.y= c("Dim_Patient"),
-              all.x =T)
-
-
-
-view(df %>% filter(Dim_Patient == "ref:Patient/BabyscriptsLegacy#1088"))
-
-df <- df %>% filter(df$Observation_Value > 0.6*df$initial_weight.x)
-
-```
-
-```{r}
-# check total rows of columns 
-#check3 <- df %>% group_by(Dim_Patient) %>% count()
-#sub2 <- check3 %>% filter(n > 250)
-```
-
-Group by patient id, trimester, week and take first entry
-```{r}
-df_week <- df %>% arrange(Dim_Patient, Observed_At) %>% group_by(Dim_Patient, week) %>%  slice(1)
-
-check <-  df_week %>% group_by(Dim_Patient) %>% count()
-
-#df_new <- df %>% group_by(Dim_Patient, Trimester, week) %>% summarise(mean_weight = #mean(Observation_Value))
-
-```
-
-
-Remove patients weight greater than 250
-```{r}
-#out <- df_week %>% filter(Observation_Value < 250)
-
-length(unique(out$Dim_Patient))
-
-# keep only week count greater than 5
-check1 <- out %>% group_by(Dim_Patient, Trimester) %>% unique(Trimester)
-
-out2 <-out %>% group_by(Dim_Patient, week) %>% count()
-
-# calculate weight diff, check values 15
-
-length(unique(out$Dim_Patient))
-length(unique(out2$Dim_Patient))
-
-```
 
 ## What is the change in weight during pregnancy for our entire population (Initial entry to 40weeks gestation) 
 ```{r}
@@ -543,18 +368,6 @@ check <- sub_df %>% group_by(Dim_Patient) %>% summarise(min = min(week), max = m
 
 ```
 
-```{r}
-check <- df %>% filter(Trimester != 'PP') %>% group_by(Dim_Patient) %>% count(GA_at_Observation)
 
-```
-
-```{r}
-summary(df)
-```
-
-```{r}
-sapply(df, function(x) sum(is.null(x)))
-
-```
 
 
