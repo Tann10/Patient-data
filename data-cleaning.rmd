@@ -273,17 +273,23 @@ count_rows <- count_rows %>% mutate(per_removed = ((initial_count - after_count)
 ```
 
 
+
 Remove low count and add manually filtered data back to the cleaned df
 ```{r}
 low <- count_rows %>% filter(per_removed  > 50)
 
 cleaned_df <- complete %>% filter(!(Dim_Patient %in% low$Dim_Patient)) %>% 
-  select(Dim_Patient, Observation_Source, Observation_Value, EDD, GA_at_Observation, date, week, trimester, days_since)
+  select(Dim_Patient, Observation_Source, Observation_Value, EDD, GA_at_Observation, date, week, trimester,days, days_since)
 
 
 processed_df <- rbind(cleaned_df, manually_rm_out)
+
 ```
 
+```{r}
+
+sum(is.na(processed_df$days))
+```
 
 Roll up the data at a day level and remove observations less than 2
 ```{r}
@@ -297,16 +303,6 @@ length(unique(day_level$Dim_Patient))
 ```
 
 
-Check first and last week difference in weights
-```{r}
-
-initial_wt <- day_level %>% group_by(Dim_Patient) %>% 
-  arrange(Dim_Patient, date) %>% filter(row_number()==1 | row_number()==n()) %>%  arrange(Dim_Patient, date) %>% mutate(weight_diff_tri = c(0,diff(wt_avg)), week_diff = c(0,diff(week)))
-
-
-```
-
-
 Merge Age, height and calculate BMI
 ```{r}
 ht <- read_excel('GWG(2+)_Corrected.5.10.20(lowcount).xlsx', sheet ='demographics')
@@ -317,9 +313,19 @@ day_level_demo <- merge(day_level, ht[,c("Dim_Patient", "Activated_At",
                                          "Customer_Group", "Height_(m)")],
                         by= "Dim_Patient", all.x = TRUE)
 
-
+# convert pounds to kg
 day_level_demo$weight_kg <- day_level_demo$wt_avg/2.2046
-day_level_demo$bmi <- day_level_demo$weight_kg/(day_level_demo$`Height_(m)`^2)
+```
+
+
+```{r}
+init_wt <-day_level_demo %>% group_by(Dim_Patient) %>% arrange(Dim_Patient,date) %>% filter(row_number() == 1)
+  
+# initial weight bmi
+init_wt$bmi <- init_wt$weight_kg/(init_wt$`Height_(m)`^2)
+
+day_level_demo <- merge(day_level_demo, init_wt[, c("Dim_Patient", "bmi")], by = "Dim_Patient", all.x = T)
+
 
 day_level_demo$bmi_category <- ifelse(day_level_demo$bmi <25, "25&less", 
                                       ifelse(day_level_demo$bmi<30, "between25&30",
@@ -333,9 +339,45 @@ day_level_demo$bmi_category <- ifelse(day_level_demo$bmi <25, "25&less",
 lessht <- day_level_demo %>% filter(`Height_(m)`<0.6)
 length(unique(lessht))
 ```
+```{r}
+write.csv(day_level_demo, "day_level.csv") 
+summary(day_level_demo)
+```
 
-1) How many total patients by: 
-       - Practice group 
+```{r}
+rm_patients <- raw_df %>% filter(! raw_df$Dim_Patient %in% day_level_demo$Dim_Patient)
+
+length(unique(rm_patients$Dim_Patient))
+
+write.csv(rm_patients, "patients_removed.csv")
+```
+
+```{r}
+week_level<- processed_df %>% group_by(Dim_Patient, trimester, Observation_Source, week) %>% summarise(wt_avg = mean(Observation_Value))
+
+count <- week_level %>% group_by(Dim_Patient) %>% count() %>% filter(n>1)
+
+# remove if weeks 2 and week diff less than 8
+
+hist(count$n)
+```
+
+Check first and last week difference in weights
+```{r}
+
+initial_wt <- day_level %>% group_by(Dim_Patient) %>% 
+  arrange(Dim_Patient, date) %>% filter(row_number()==1 | row_number()==n()) %>%  arrange(Dim_Patient, date) %>% mutate(weight_diff_tri = c(0,diff(wt_avg)), week_diff = c(0,diff(week)))
+
+
+```
+
+
+```{r}
+# check T3 drop  wt diff if < -9
+
+```
+##1) How many total patients by: 
+###       - Practice group 
        - Age bracket (5 years)
        - BMI category (less than 25 ; 25.1 - 29.9 ; 30-34.9 ; 35.0-39.9 ; 40-59.9 ; 60 -over)
        
@@ -349,7 +391,9 @@ q1_groups$Customer_Group <- factor(q1_groups$Customer_Group, levels = unique(q1_
 #plot_ly(q1_groups, y = ~q1_groups$Customer_Group, x = ~q1_groups$n, type = 'bar',  orientation = 'h')
 
 plt1 <- ggplot(q1_groups, aes(x =Customer_Group,  y =n)) + 
-  geom_bar(stat = "identity") + theme(axis.text.x = element_text(angle = 90)) +
+  geom_bar(stat = "identity", fill = 'blue') + #theme(axis.text.x = element_text(angle = 90)) +
+  theme(axis.title.x=element_blank(), axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) + 
   ggtitle("Total patients across patient groups") +
   ylab("Count of Patients") +
   xlab("Patient groups")
@@ -360,7 +404,7 @@ ggplotly(plt1)
 
 ```
 
-Age
+### Age
 ```{r}
 # Age bracket 
 age <- day_level_demo %>% filter((`Age_at_Activation_(years)`>14) &
@@ -392,200 +436,4 @@ ggplotly(plt1)
 
 
 ```
-
-
-BMI Categories
-
-```{r}
-bmi <- day_level_demo %>% filter(!is.na(bmi_category))
-q1_bmi <- bmi %>% select(Dim_Patient, bmi_category) %>% unique() %>%group_by(bmi_category) %>% count() 
-
-plt1 <- ggplot(q1_bmi, aes(x =bmi_category,  y =n)) + 
-  geom_bar(stat = "identity", fill='darkblue') +
-  ggtitle("Total patients across different BMI groups") +
-  ylab("Count of Patients") +
-  xlab("BMI Categories")
-
-ggplotly(plt1)
-
-```
-
-
-2) How often did each patient enter weights by: 
-        - Entire population 
-         - Practice group 
-       - Age bracket (5 years)
-       - BMI category (less than 25 ; 25.1 - 29.9 ; 30-34.9 ; 35.0-39.9 ; 40-59.9 ; 60 -over)
-       
-       
-```{r}
-q2_whole <- day_level_demo %>% group_by(Dim_Patient) %>% count()
-
-
-q2_prac <- day_level_demo %>% group_by(Customer_Group, Dim_Patient) %>% summarise(count = n()) %>% 
-  ungroup() %>% group_by(Customer_Group) %>% summarise(avg_count = mean(count),
-                                                                  std_count = sd(count)) 
-                                                                  
-
-q2_age <- age %>% group_by(age_category, Dim_Patient) %>% summarise(count = n()) %>% ungroup() %>% group_by(age_category) %>% summarise(avg_count = mean(count),std_count = sd(count)) 
-
-
-q2_bmi <- bmi %>% group_by(bmi_category, Dim_Patient) %>% summarise(count = n()) %>% ungroup() %>% group_by(bmi_category) %>% summarise(avg_count = mean(count),std_count = sd(count)) 
-
-```
-
-3) What is the average starting time (I.e Gestational age at first entry ) By: 
-    --same as previous 
-
-```{r}
-q3_whole <- day_level_demo %>% group_by(Dim_Patient) %>% summarise(start_date = min(date))
-
-q3_prac <- day_level_demo %>% group_by(Customer_Group, Dim_Patient) %>% 
-  summarise(start_date = min(date)) %>% ungroup() %>% group_by(Customer_Group) %>%
-  summarise(mean_date = mean.Date(start_date))
-
-q3_age <- age %>% group_by(age_category, Dim_Patient) %>% 
-  summarise(start_date = min(date)) %>% ungroup() %>% group_by(age_category) %>%
-  summarise(mean_date = mean.Date(start_date))
-
-plot1 <- ggplot(data=q3_age, aes(y=mean_date, x=age_category)) +
-  geom_line()+
-  geom_point() +
-  ggtitle("Average starting time with ") 
-
-ggplotly(plot1)
-
-
-q3_bmi <- bmi %>% group_by(bmi_category, Dim_Patient) %>% 
-  summarise(start_date = min(date)) %>% ungroup() %>% group_by(bmi_category) %>%
-  summarise(mean_date = mean.Date(start_date))
-```
-
-4) What is the  length of involvement (i.e difference of gestational age) By: 
-    -- same as previous 
-    
-```{r}
-q4_whole <- day_level_demo %>% group_by(Dim_Patient) %>% summarise(start_date = min(date), end_date = max(date),  length = end_date - start_date) 
-
-q4_prac <- day_level_demo %>% group_by(Customer_Group, Dim_Patient) %>% 
-  summarise(start_date = min(date), end_date = max(date),  length = end_date - start_date) %>% 
-  ungroup() %>% group_by(Customer_Group) %>%
-  summarise(avg_length = mean(length))
-
-q4_age <- age %>% group_by(age_category, Dim_Patient) %>% 
-  summarise(start_date = min(date), end_date = max(date),  length = end_date - start_date) %>% 
-  ungroup() %>% group_by(age_category) %>%
-  summarise(mean_date = mean(length))
-
-
-q4_bmi <- bmi %>% group_by(bmi_category, Dim_Patient) %>% 
-  summarise(start_date = min(date), end_date = max(date),  length = end_date - start_date) %>% 
-  ungroup() %>% group_by(bmi_category) %>%
-  summarise(mean_date = mean(length))
-
-```
-
-5) Weight difference at the start - finish of each trimester by (may be hard for people with only 1 entry per trimester): 
-       - Whole group 
-      - Practice group
-      - Age 
-     - BMI group 
-     
-```{r}
-q5_whole <- day_level_demo %>% group_by(Dim_Patient, trimester)  %>% 
-  arrange(Dim_Patient,trimester,date) %>% filter(row_number()==1 | row_number()==n()) %>% 
-  mutate(n = n()) %>%
-  filter(n>1) %>%
-  summarise(weight_diff = diff(wt_avg))
-
-q5_prac <- day_level_demo %>% group_by(Customer_Group, Dim_Patient, trimester)  %>% 
- arrange(Customer_Group, Dim_Patient,trimester,date) %>% filter(row_number()==1 | row_number()==n()) %>% 
-  mutate(n = n()) %>%
-  filter(n>1) %>%
-  summarise(weight_diff = diff(wt_avg)) %>% ungroup() %>%
-  group_by(Customer_Group, trimester) %>% summarise(avg_weight_diff = mean(weight_diff), 
-                                                    std_wt_diff = sd(weight_diff))
-
-
-q5_age <- age %>% group_by(age_category, Dim_Patient, trimester)  %>% 
- arrange(Dim_Patient,trimester,date) %>% filter(row_number()==1 | row_number()==n()) %>% 
-  mutate(n = n()) %>%
-  filter(n>1) %>%
-  summarise(weight_diff = diff(wt_avg)) %>% ungroup() %>%
-  group_by(age_category, trimester) %>% summarise(avg_weight_diff = mean(weight_diff), 
-                                                    std_wt_diff = sd(weight_diff))
-
-
-q5_bmi <- bmi %>% group_by(bmi_category, Dim_Patient, trimester)  %>% 
- arrange(Dim_Patient,trimester,date) %>% filter(row_number()==1 | row_number()==n()) %>% 
-  mutate(n = n()) %>%
-  filter(n>1) %>%
-  summarise(weight_diff = diff(wt_avg)) %>% ungroup() %>%
-  group_by(bmi_category, trimester) %>% summarise(avg_weight_diff = mean(weight_diff), 
-                                                    std_wt_diff = sd(weight_diff))
-
-```
-
-## What is the change in weight during pregnancy for our entire population (Initial entry to 40weeks gestation) 
-```{r}
-q1 <-  out %>% group_by(week) %>% summarise(total_weight = sum(Observation_Value)) %>% arrange(week) %>% mutate(change = (c(total_weight[1], diff(total_weight)))/total_weight[1])
-
-plot1 <- ggplot(data=q1, aes(x=week, y=change)) +
-  geom_line()+
-  geom_point() +
-  ggtitle("Change in weight for all patients") 
-  
-
-
-ggplotly(plot1)
-```
-
-
-
-## What is the change in weight for specific population groups (By customer group, by BMI category, by age) 
-
-
-
-```{r}
-# add interactive bar -------
-library(ggplot2)
-library(ggiraph)
-
-p <- ggplot(mpg, aes( x = class, tooltip = class,
-        data_id = class ) ) +
-  geom_bar_interactive()
-
-x <- girafe(ggobj = p)
-if( interactive() ) print(x)
-
-dat <- data.frame( name = c( "David", "Constance", "Leonie" ),
-    gender = c( "Male", "Female", "Female" ),
-    height = c(172, 159, 71 ) )
-p <- ggplot(dat, aes( x = name, y = height, tooltip = gender,
-                      data_id = name ) ) +
-  geom_col_interactive()
-
-x <- girafe(ggobj = p)
-if( interactive() ) print(x)
-
-# an example with interactive guide ----
-dat <- data.frame(
-  name = c( "Guy", "Ginette", "David", "Cedric", "Frederic" ),
-  gender = c( "Male", "Female", "Male", "Male", "Male" ),
-  height = c(169, 160, 171, 172, 171 ) )
-p <- ggplot(dat, aes( x = name, y = height, fill = gender,
-                      data_id = name ) ) +
-  geom_bar_interactive(stat = "identity") +
-    scale_fill_manual_interactive(
-      values = c(Male = "#0072B2", Female = "#009E73"),
-      data_id = c(Female = "Female", Male = "Male"),
-      tooltip = c(Male = "Male", Female = "Female")
-    )
-x <- girafe(ggobj = p)
-if( interactive() ) print(x)
-
-```
-
-
-
 
