@@ -23,6 +23,7 @@ knitr::opts_chunk$set(include = T)
 knitr::opts_chunk$set(warning = F)
 ```
 
+
 ```{r basicfcn, include=F}
 # can add quietly=T option to the require() function
 loadPkg = function(x) { if (!require(x,character.only=T, quietly =T)) { install.packages(x,dep=T,repos="http://cran.us.r-project.org"); if(!require(x,character.only=T)) stop("Package not found") } }
@@ -45,55 +46,92 @@ loadPkg("tidyverse")
 loadPkg("ggplot2")
 loadPkg("plotly")
 loadPkg("lubridate")
-
+loadPkg("knitr")
+loadPkg("epitools")
 ```
 
 Reading data ..
 ```{r}
-raw_df <- read.csv("processed_df.csv")
+raw_df <- read.csv("processed_df_5_19.csv")
 names(raw_df) <- str_replace_all(names(raw_df), c(" " = "_"))
+raw_df$date = as.Date(raw_df$date)
 
 dim(raw_df)
 length(unique(raw_df$Dim_Patient))
 ```
 
 
+
 Roll up the data at a day level and remove observations less than 3 days
 ```{r}
-day_level<- processed_df %>% group_by(Dim_Patient, trimester, Observation_Source, date, week, days) %>% summarise(wt_avg = mean(Observation_Value))
+day_level <- raw_df %>% 
+  group_by(Dim_Patient, trimester, Observation_Source, date, week, days) %>% 
+  summarise(wt_avg = mean(Observation_Value))
 
-gtr_3 <- day_level %>% group_by(Dim_Patient) %>% count() %>% filter(n > 2)
+gtr_3 <- day_level %>% 
+  group_by(Dim_Patient) %>% 
+  count() %>% filter(n > 2)
 
 day_level <- day_level %>% filter(Dim_Patient %in% gtr_3$Dim_Patient)
 
 length(unique(day_level$Dim_Patient))
 dim(day_level)
 
-hist(gtr_3$n)
+#write.csv(day_level, "day_level_5_19.csv")
+
+g1 <- ggplot(gtr_3, aes(x=n)) + geom_histogram()
+ggplotly(g1)
 ```
 
-Roll up the data at a day level and remove observations less than 2 week
+Total number of rows and columns are `r dim(day_level)` and total number of unique patients are `r length(unique(day_level$Dim_Patient))`
+
+
+Roll up the data at a week level and remove observations just 1 week
 ```{r}
-week_level<- processed_df %>% group_by(Dim_Patient, trimester, Observation_Source, week) %>% summarise(wt_avg = mean(Observation_Value))
+week_level<- raw_df %>% group_by(Dim_Patient, trimester, Observation_Source, week) %>% summarise(wt_avg = mean(Observation_Value))
 
 gtr_1 <- week_level %>% group_by(Dim_Patient) %>% count() %>% filter(n>1)
 
-week_level <- week_level %>% filter(!Dim_Patient %in% gtr_1$Dim_Patient)
+week_level <- week_level %>% filter(Dim_Patient %in% gtr_1$Dim_Patient) 
+
+week_level <-week_level %>% group_by(Dim_Patient) %>%
+  mutate( n = n(),
+    recommend_obs = ifelse(n >=6, "rec", "not_rec"))
 
 length(unique(week_level$Dim_Patient))
 dim(week_level)
+
+#write.csv(week_level, "week_level_5_19.csv")
+
 # remove if weeks 2 and week diff less than 8
 
-hist(gtr_1$n)
+g1 <- ggplot(gtr_1, aes(x=n)) + geom_histogram()
+ggplotly(g1)
 ```
 
-Check first and last week difference in weights
+Merge rec list with patient at a day level
+```{r}
+rec_list <- week_level %>% select(Dim_Patient, recommend_obs) %>% distinct()
+
+day_level_demo <- merge(day_level, rec_list, by= "Dim_Patient", all.x=T)
+```
+
+Total number of rows and columns are `r dim(week_level)` and total number of unique patients are `r length(unique(week_level$Dim_Patient))`
+
+
+Check first and last week difference in weights at a day_level
 ```{r}
 
 initial_wt <- day_level %>% group_by(Dim_Patient) %>% 
   arrange(Dim_Patient, date) %>% filter(row_number()==1 | row_number()==n()) %>%  arrange(Dim_Patient, date) %>% mutate(weight_diff_tri = c(0,diff(wt_avg)), week_diff = c(0,diff(week)))
 
+initial_wt %>%
+  DT::datatable(
+    extensions = 'Buttons', 
+    options = list(dom = 'Bfrtip', 
+                   buttons = c('excel', "csv")))
 
+summary(initial_wt)
 ```
 
 
@@ -121,12 +159,10 @@ init_wt$bmi <- init_wt$weight_kg/(init_wt$`Height_(m)`^2)
 day_level_demo <- merge(day_level_demo, init_wt[, c("Dim_Patient", "bmi")], by = "Dim_Patient", all.x = T)
 
 
-day_level_demo$bmi_category <- ifelse(day_level_demo$bmi <25, "25&less", 
-                                      ifelse(day_level_demo$bmi<30, "between25&30",
-                                             ifelse(day_level_demo$bmi<35, "between30&35", 
-                                                    ifelse(day_level_demo$bmi<40,"between35&40",
-                                                           ifelse(day_level_demo$bmi<60,"between40&59",
-                                                           "over60")))))
+day_level_demo$bmi_category <- ifelse(day_level_demo$bmi <18.5, "Underweight", 
+                                      ifelse(day_level_demo$bmi<25, "Normal Weight",
+                                             ifelse(day_level_demo$bmi<30, "Overweight", 
+                                                           "Obese")))
 
 # check patient having ht less than 0.5
 
@@ -135,9 +171,8 @@ length(unique(lessht))
 ```
 ```{r}
 # check T3 drop  wt diff if < -9
-
 ```
-##1) How many total patients by: 
+## 1) How many total patients by: 
 ###       - Practice group 
        - Age bracket (5 years)
        - BMI category (less than 25 ; 25.1 - 29.9 ; 30-34.9 ; 35.0-39.9 ; 40-59.9 ; 60 -over)
@@ -149,6 +184,12 @@ q1_groups <- day_level_demo %>% select(Customer_Group, Dim_Patient) %>% unique()
 
 q1_groups$Customer_Group <- factor(q1_groups$Customer_Group, levels = unique(q1_groups$Customer_Group))
 
+q1_groups %>%
+  DT::datatable(
+    extensions = 'Buttons', 
+    options = list(dom = 'Bfrtip', 
+                   buttons = c('excel', "csv")))
+
 #plot_ly(q1_groups, y = ~q1_groups$Customer_Group, x = ~q1_groups$n, type = 'bar',  orientation = 'h')
 
 plt1 <- ggplot(q1_groups, aes(x =Customer_Group,  y =n)) + 
@@ -158,8 +199,6 @@ plt1 <- ggplot(q1_groups, aes(x =Customer_Group,  y =n)) +
   ggtitle("Total patients across patient groups") +
   ylab("Count of Patients") +
   xlab("Patient groups")
-
-
 
 ggplotly(plt1)
 
@@ -187,6 +226,13 @@ age$age_category <- ifelse(age$`Age_at_Activation_(years)`<20, "14-19",
 #age$age_category <- as.numeric(cut(age$`Age_at_Activation_(years)`, 9))
 q1_age <- age %>% select(Dim_Patient, age_category) %>% unique() %>% group_by(age_category) %>% count() 
 
+
+q1_age %>%
+  DT::datatable(
+    extensions = 'Buttons', 
+    options = list(dom = 'Bfrtip', 
+                   buttons = c('excel', "csv")))
+
 plt1 <- ggplot(q1_age, aes(x =age_category,  y =n)) + 
   geom_bar(stat = "identity", fill='darkblue') +
   ggtitle("Total patients across different age groups") +
@@ -202,81 +248,170 @@ ggplotly(plt1)
 ### BMI Categories
 
 ```{r}
-bmi <- day_level_demo %>% filter((!is.na(bmi_category)) & (`Height_(m)` >0.5))
+bmi <- day_level_demo %>% filter((!is.na(bmi_category)) & (`Height_(m)` >0.6))
 q1_bmi <- bmi %>% select(Dim_Patient, bmi_category) %>% unique() %>%group_by(bmi_category) %>% count() 
+
+q1_bmi %>%
+  DT::datatable(
+    extensions = 'Buttons', 
+    options = list(dom = 'Bfrtip', 
+                   buttons = c('excel', "csv")))
 
 plt1 <- ggplot(q1_bmi, aes(x =bmi_category,  y =n)) + 
   geom_bar(stat = "identity", fill='darkblue') +
   ggtitle("Total patients across different BMI groups") +
   ylab("Count of Patients") +
-  xlab("BMI Categories")
+  xlab("BMI Categories") + scale_x_discrete(limits=c("Underweight", "Normal Weight", "Overweight", "Obese"))
 
 ggplotly(plt1)
 
 ```
 
 
-2) How often did each patient enter weights by: 
+## 2) How often did each patient enter weights:
         - Entire population 
          - Practice group 
        - Age bracket (5 years)
        - BMI category (less than 25 ; 25.1 - 29.9 ; 30-34.9 ; 35.0-39.9 ; 40-59.9 ; 60 -over)
        
+Entire Population
        
 ```{r}
-q2_whole <- day_level_demo %>% group_by(Dim_Patient) %>% count()
-summary(q2_whole)
-hist(q2_whole$n)
-q2_prac <- day_level_demo %>% group_by(Customer_Group, Dim_Patient) %>% summarise(count = n()) %>% 
-  ungroup() %>% group_by(Customer_Group) %>% summarise(avg_count = mean(count),
-                                                                  std_count = sd(count)) 
-                                                                  
+q2_whole <- day_level_demo %>%
+  group_by(Dim_Patient) %>%
+  summarize(
+    total_obser = n(),
+    start_week = min(week),
+    start_date = min(date),
+    end_date = max(date),
+    length = end_date - start_date
+  )
 
-q2_age <- age %>% group_by(age_category, Dim_Patient) %>% summarise(count = n()) %>% ungroup() %>% group_by(age_category) %>% summarise(avg_count = mean(count),std_count = sd(count)) 
+q2_whole %>%
+  DT::datatable(
+    extensions = 'Buttons', 
+    options = list(dom = 'Bfrtip', 
+                   buttons = c('excel', "csv")))
 
-
-q2_bmi <- bmi %>% group_by(bmi_category, Dim_Patient) %>% summarise(count = n()) %>% ungroup() %>% group_by(bmi_category) %>% summarise(avg_count = mean(count),std_count = sd(count)) 
 
 ```
 
-3) What is the average starting time (I.e Gestational age at first entry ) By: 
+
+Practice groups 
+```{r}
+
+q2_prac <- day_level_demo %>%
+  group_by(Customer_Group, Dim_Patient) %>%
+  summarise(
+    count = n(),
+    start_week = min(week),
+    start_date = min(date),
+    end_date = max(date),
+    length = end_date - start_date
+  ) %>%
+  ungroup() %>%
+  group_by(Customer_Group) %>%
+  summarise(
+    avg_count = mean(count),
+    std_count = sd(count),
+    mean_week = mean(start_week),
+    avg_length = mean(length), 
+    unique_patients = n_distinct(Dim_Patient)
+  ) 
+
+q2_prac %>%
+  DT::datatable(
+    extensions = 'Buttons', 
+    options = list(dom = 'Bfrtip', 
+                   buttons = c('excel', "csv")))
+      
+```
+
+Age categories 
+```{r}
+q2_age <- age %>% group_by(age_category, Dim_Patient) %>% 
+  summarise(count = n(), start_week = min(week), 
+            start_date = min(date), end_date = max(date),  length = end_date - start_date) %>% 
+  ungroup() %>% 
+  group_by(age_category) %>% 
+  summarise(avg_count = mean(count),
+            std_count = sd(count), 
+            mean_week = mean(start_week), 
+            avg_length = mean(length), 
+            unique_patients = n_distinct(Dim_Patient)) 
+
+q2_age %>%
+  DT::datatable(
+    extensions = 'Buttons', 
+    options = list(dom = 'Bfrtip', 
+                   buttons = c('excel', "csv")))
+
+
+```
+
+
+BMI table
+```{r}
+q2_bmi <- bmi %>% 
+  group_by(bmi_category, Dim_Patient) %>% 
+  summarise(count = n(), 
+            start_week = min(week), 
+            start_date = min(date), end_date = max(date), length = end_date - start_date) %>% 
+  ungroup() %>% 
+  group_by(bmi_category) %>% 
+  summarise(avg_count = mean(count),
+            std_count = sd(count), 
+            mean_week = mean(start_week), 
+            avg_length = mean(length), 
+            unique_patients = n_distinct(Dim_Patient)) 
+
+q2_bmi %>%
+  DT::datatable(
+    extensions = 'Buttons', 
+    options = list(dom = 'Bfrtip', 
+                   buttons = c('excel', "csv")))
+```
+
+## 3) What is the average starting time (I.e Gestational age at first entry ) By: 
     --same as previous 
 
 ```{r}
 # do this for week
+q3_whole <- day_level_demo %>% group_by(Dim_Patient) %>% summarise(start_week = min(week)) %>% 
+  group_by(start_week)  %>% count()
+plt1 <- ggplot(q3_whole, aes(x =start_week,  y =n)) + 
+  geom_bar(stat = "identity", fill='darkblue') +
+  ggtitle("Start week of all patients") +
+  ylab("Count of Patients") +
+  xlab("Start week")
 
-q3_whole <- day_level_demo %>% group_by(Dim_Patient) %>% summarise(start_date = min(date))
-
-q3_prac <- day_level_demo %>% group_by(Customer_Group, Dim_Patient) %>% 
-  summarise(start_date = min(date)) %>% ungroup() %>% group_by(Customer_Group) %>%
-  summarise(mean_date = mean.Date(start_date))
-
-q3_age <- age %>% group_by(age_category, Dim_Patient) %>% 
-  summarise(start_date = min(date)) %>% ungroup() %>% group_by(age_category) %>%
-  summarise(mean_date = mean.Date(start_date))
-
-plot1 <- ggplot(data=q3_age, aes(y=mean_date, x=age_category)) +
-  geom_line()+
-  geom_point() +
-  ggtitle("Average starting time with ") 
-
-ggplotly(plot1)
-
-
-q3_bmi <- bmi %>% group_by(bmi_category, Dim_Patient) %>% 
-  summarise(start_date = min(date)) %>% ungroup() %>% group_by(bmi_category) %>%
-  summarise(mean_date = mean.Date(start_date))
+ggplotly(plt1)
 ```
 
-4) What is the  length of involvement (i.e difference of gestational age) By: 
+```{r}
+q3_prac <- day_level_demo %>% group_by(Customer_Group, Dim_Patient) %>% 
+  summarise(start_week = min(week)) %>% ungroup() %>% group_by(Customer_Group) %>%
+  summarise(mean_week = mean(start_week))
+
+q3_age <- age %>% group_by(age_category, Dim_Patient) %>% 
+  summarise(start_week = min(week)) %>% ungroup() %>% group_by(age_category) %>%
+  summarise(mean_week = mean.Date(start_week))
+
+q3_bmi <- bmi %>% group_by(bmi_category, Dim_Patient) %>% 
+  summarise(start_week = min(week)) %>% ungroup() %>% group_by(bmi_category) %>%
+  summarise(mean_week = mean.Date(start_week))
+```
+
+## 4) What is the  length of involvement (i.e difference of gestational age) By: 
     -- same as previous 
     
 ```{r}
 q4_whole <- day_level_demo %>% group_by(Dim_Patient) %>% summarise(start_date = min(date), end_date = max(date),  length = end_date - start_date) 
-q4_whole$length2 = as.numeric(q4_whole$length)
-g1 <- ggplot(q4_whole, aes(x=length2)) +geom_histogram()
-ht1 <- hist(q4_whole$length2)
-ggplotly(g1)
+
+# q4_whole$length2 = as.numeric(q4_whole$length)
+# g1 <- ggplot(q4_whole, aes(x=length2)) +geom_histogram()
+# ht1 <- hist(q4_whole$length2)
+# ggplotly(g1)
 
 q4_prac <- day_level_demo %>% group_by(Customer_Group, Dim_Patient) %>% 
   summarise(start_date = min(date), end_date = max(date),  length = end_date - start_date) %>% 
@@ -308,12 +443,13 @@ q4_bmi <- bmi %>% group_by(bmi_category, Dim_Patient) %>%
 
 ```
 
-5) Weight difference at the start - finish of each trimester by (may be hard for people with only 1 entry per trimester): 
+## 5) Weight difference at the start - finish of each trimester by (may be hard for people with only 1 entry per trimester): 
       - Whole group 
       - Practice group
       - Age 
      - BMI group 
      
+Whole group
 ```{r}
 q5_whole <- day_level_demo %>% group_by(Dim_Patient, trimester)  %>% 
   arrange(Dim_Patient, date) %>% filter(row_number()==1 | row_number()==n()) %>% 
@@ -321,9 +457,15 @@ q5_whole <- day_level_demo %>% group_by(Dim_Patient, trimester)  %>%
   filter(n>1) %>%
   summarise(weight_diff = diff(wt_avg))
 
-g1 <- ggplot(q5_whole, aes(x=weight_diff)) + geom_histogram()
-ggplotly(g1)
+q5_whole %>%
+  DT::datatable(
+    extensions = 'Buttons', 
+    options = list(dom = 'Bfrtip', 
+                   buttons = c('excel', "csv")))
+```
 
+Practice group 
+```{r}
 
 q5_prac <- day_level_demo %>% group_by(Customer_Group, Dim_Patient, trimester)  %>% 
  arrange(Customer_Group, Dim_Patient, date) %>% filter(row_number()==1 | row_number()==n()) %>% 
@@ -333,6 +475,18 @@ q5_prac <- day_level_demo %>% group_by(Customer_Group, Dim_Patient, trimester)  
   group_by(Customer_Group, trimester) %>% summarise(avg_weight_diff = mean(weight_diff), 
                                                     std_wt_diff = sd(weight_diff))
 
+q5_prac %>%
+  DT::datatable(
+    extensions = 'Buttons', 
+    options = list(dom = 'Bfrtip', 
+                   buttons = c('excel', "csv")))
+
+```
+
+
+Age
+```{r}
+
 
 q5_age <- age %>% group_by(age_category, Dim_Patient, trimester)  %>% 
  arrange(Dim_Patient, date) %>% filter(row_number()==1 | row_number()==n()) %>% 
@@ -341,19 +495,42 @@ q5_age <- age %>% group_by(age_category, Dim_Patient, trimester)  %>%
   summarise(weight_diff = diff(wt_avg)) %>% ungroup() %>%
   group_by(age_category, trimester) %>% summarise(avg_weight_diff = mean(weight_diff), 
                                                     std_wt_diff = sd(weight_diff))
+q5_age %>%
+  DT::datatable(
+    extensions = 'Buttons', 
+    options = list(dom = 'Bfrtip', 
+                   buttons = c('excel', "csv")))
+```
 
+
+```{r}
 
 q5_bmi <- bmi %>% group_by(bmi_category, Dim_Patient, trimester)  %>% 
  arrange(Dim_Patient, date) %>% filter(row_number()==1 | row_number()==n()) %>% 
   mutate(n = n()) %>%
   filter(n>1) %>%
-  summarise(weight_diff = diff(wt_avg)) %>% ungroup() %>%
-  group_by(bmi_category, trimester) %>% summarise(avg_weight_diff = mean(weight_diff), 
-                                                    std_wt_diff = sd(weight_diff))
-
+  summarise(weight_diff = diff(wt_avg), 
+            week_diff = diff(week),
+            range = ifelse(is.infinite(abs(weight_diff/week_diff)), 1, weight_diff/week_diff)) %>% 
+  ungroup() %>%
+  group_by(bmi_category, trimester) %>% 
+  summarise(avg_weight_diff = mean(weight_diff), 
+            std_wt_diff = sd(weight_diff), 
+            mean_range = mean(range, na.rm = T))
 ```
 
-6) weight difference from the first observation to the last observation (IN TRIMESTER 3) 
+## The rate of weight gain in the second / third trimesters? So average lbs / week ? This would be weight difference in T2  divided by week difference in T2. and then the same for T3 
+
+The values do not reside in the recommended range of the reference table
+```{r}
+q5_bmi %>%
+  DT::datatable(
+    extensions = 'Buttons', 
+    options = list(dom = 'Bfrtip', 
+                   buttons = c('excel', "csv")))
+```
+
+## 6) weight difference from the first observation to the last observation (IN TRIMESTER 3) 
     by: 
       - same as above 
       
@@ -362,14 +539,52 @@ q5_bmi <- bmi %>% group_by(bmi_category, Dim_Patient, trimester)  %>%
 q6_whole <- q5_whole %>% filter(trimester == "T3")
 g1 <- ggplot(q6_whole, aes(x=weight_diff)) + geom_histogram()
 ggplotly(g1)
-q6_prac <- q5_prac %>% filter(trimester == "T3")
-q6_age <- q5_age %>% filter(trimester == "T3")
-q6_bmi <- q5_bmi %>% filter(trimester == "T3")
+
+q6_whole %>%
+  DT::datatable(
+    extensions = 'Buttons', 
+    options = list(dom = 'Bfrtip', 
+                   buttons = c('excel', "csv")))
 ```
 
-7) Weight difference from last entry in T3 to last entry in PP by: 
+
+Practice groups
+```{r}
+
+q6_prac <- q5_prac %>% filter(trimester == "T3")
+q6_prac %>%
+  DT::datatable(
+    extensions = 'Buttons', 
+    options = list(dom = 'Bfrtip', 
+                   buttons = c('excel', "csv")))
+```
+
+
+Age
+```{r}
+q6_age <- q5_age %>% filter(trimester == "T3")
+q6_age %>%
+  DT::datatable(
+    extensions = 'Buttons', 
+    options = list(dom = 'Bfrtip', 
+                   buttons = c('excel', "csv")))
+```
+
+BMI
+```{r}
+q6_bmi <- q5_bmi %>% filter(trimester == "T3")
+q6_bmi %>%
+  DT::datatable(
+    extensions = 'Buttons', 
+    options = list(dom = 'Bfrtip', 
+                   buttons = c('excel', "csv")))
+```
+
+## 7) Weight difference from last entry in T3 to last entry in PP by: 
      - same as above 
      
+     
+Whole population
 ```{r}
 
 q7_whole <- day_level_demo %>% filter(trimester %in% c("T3", "PP")) %>% 
@@ -381,10 +596,18 @@ q7_whole <- day_level_demo %>% filter(trimester %in% c("T3", "PP")) %>%
   filter(n>1) %>%
   summarise(weight_diff = diff(wt_avg))
 
-view(processed_df %>% filter(Dim_Patient == "ref:Patient/BabyscriptsLegacy#3273"))
-
 g1 <- ggplot(q7_whole, aes(x=weight_diff)) + geom_histogram()
 ggplotly(g1)
+
+q7_whole %>%
+  DT::datatable(
+    extensions = 'Buttons', 
+    options = list(dom = 'Bfrtip', 
+                   buttons = c('excel', "csv")))
+```
+
+Practice groups
+```{r}
 
 q7_prac <- day_level_demo %>% filter(trimester %in% c("T3", "PP")) %>% 
   group_by(Customer_Group, Dim_Patient, trimester)  %>% 
@@ -398,6 +621,20 @@ q7_prac <- day_level_demo %>% filter(trimester %in% c("T3", "PP")) %>%
   summarise(pt_count = n_distinct(Dim_Patient), avg_weight_diff = mean(weight_diff),
             std_wt_diff = sd(weight_diff))
 
+g1 <- ggplot(q7_prac, aes(x=avg_weight_diff)) + geom_histogram()
+ggplotly(g1)
+
+q7_prac %>%
+  DT::datatable(
+    extensions = 'Buttons', 
+    options = list(dom = 'Bfrtip', 
+                   buttons = c('excel', "csv")))
+```
+
+
+Age 
+```{r}
+
 q7_age <- age %>% filter(trimester %in% c("T3", "PP")) %>% 
   group_by(age_category, Dim_Patient, trimester)  %>% 
   arrange(Dim_Patient,date) %>% 
@@ -410,6 +647,15 @@ q7_age <- age %>% filter(trimester %in% c("T3", "PP")) %>%
   summarise(pt_count = n_distinct(Dim_Patient), avg_weight_diff = mean(weight_diff),
             std_wt_diff = sd(weight_diff))
 
+q7_age %>%
+  DT::datatable(
+    extensions = 'Buttons', 
+    options = list(dom = 'Bfrtip', 
+                   buttons = c('excel', "csv")))
+```
+
+BMI 
+```{r}
 q7_bmi <- bmi %>% filter(trimester %in% c("T3", "PP")) %>% 
   group_by(Dim_Patient, trimester)  %>% 
   arrange(Dim_Patient,date) %>% 
@@ -422,37 +668,413 @@ q7_bmi <- bmi %>% filter(trimester %in% c("T3", "PP")) %>%
   summarise(pt_count = n_distinct(Dim_Patient), avg_weight_diff = mean(weight_diff),
             std_wt_diff = sd(weight_diff))
 
+q7_bmi %>%
+  DT::datatable(
+    extensions = 'Buttons', 
+    options = list(dom = 'Bfrtip', 
+                   buttons = c('excel', "csv")))
 ```
+
 
 ## Check if weights difference are statistically significant
 
+Null hypothesis is that the mean of the weight differences is same for all groups 
+
+```{r}
+
+age <- age %>% group_by(Dim_Patient) %>% arrange(Dim_Patient, date) %>%
+  mutate(weight_diff = c(0,diff(wt_avg)))
+
+# Run ANOVA
+anova_wt_age <- aov(weight_diff ~ age_category, data = age)
+summary(anova_wt_age)
+anova_wt_age
+```
+As the p value is low we reject the null hypothesis, which represents the groups are different from each other. Further we us tukeyhsd to check which groups are statistically different from each other
+
+```{r}
+
+tukey_age <- TukeyHSD(anova_wt_age, conf.level = 0.95)
+tukey_age
+```
+
+age group 14-19 and 20-24 are statiscally different from other groups
+
+
+Similarlly test differences in bmi categories:
+
+```{r}
+bmi <- bmi %>% group_by(Dim_Patient) %>% arrange(Dim_Patient, date) %>%
+  mutate(weight_diff = c(0,diff(wt_avg)))
+# Run ANOVA
+anova_wt_bmi <- aov(weight_diff ~ bmi_category, data = bmi)
+summary(anova_wt_bmi)
+anova_wt_bmi
+
+```
+
 ```{r}
 # Run ANOVA
-anova_wt_cg <- aov(wt_avg ~ Customer_Group, data = day_level_demo)
-summary(anova_wt_cg)
-anova_wt_cg
+tukey <- TukeyHSD(anova_wt_bmi, conf.level = 0.95)
+tukey
+
 ```
+Apart from overweight and normal weight, all groups are statistically different. 
 
 
-8) Can we get a rate of weight gain (T3-T1) for each group ; and rate of weight loss for PP (PP-T3) 
+## 8) Can we get a rate of weight gain (T3-T1) for each group ; and rate of weight loss for PP (PP-T3) 
       - Perhaps here we can interpolate for PP (only 6 weeks)???? 
-
-## What is the change in weight during pregnancy for our entire population (Initial entry to 40weeks gestation) 
+      
+Weight Gain:      
 ```{r}
-#q1 <-  out %>% group_by(week) %>% summarise(total_weight = sum(Observation_Value)) %>% arrange(week) %>% mutate(change = (c(total_weight[1], diff(total_weight)))/total_weight[1])
+wt_gain <- day_level_demo %>% filter(trimester %in% c("T1", "T3")) %>% 
+  group_by(Customer_Group, Dim_Patient, trimester)  %>% 
+  arrange(Dim_Patient,date) %>% 
+  filter( (row_number()==1 & trimester== "T1") | (row_number()==n() & trimester== "T3")) %>% 
+  ungroup() %>%  
+  group_by(Customer_Group, bmi_category, Dim_Patient) %>%
+  mutate(n = n()) %>%
+  filter(n>1) %>% arrange(Customer_Group, Dim_Patient, trimester) %>%
+  summarise(weight_gain = diff(wt_avg))
 
-#plot1 <- ggplot(data=q1, aes(x=week, y=change)) +
-#  geom_line()+
-#  geom_point() +
-#  ggtitle("Change in weight for all patients") 
+wt_gain_groups <- wt_gain %>% group_by(Customer_Group) %>% summarise(avg_gain = mean(weight_gain))
+
+
+wt_gain_groups %>%
+  DT::datatable(
+    extensions = 'Buttons', 
+    options = list(dom = 'Bfrtip', 
+                   buttons = c('excel', "csv")))
+wt_gain = merge(wt_gain, rec_list, by = "Dim_Patient", all.x = T)
+
+```
+
+## We want to know the behavior of outliers (i.e women who gained MORE or LESS than the recommended weight gain based on BMI)  This would be T1 - T3 (so over the whole pregnancy)
+ - For underweight MORE than 40 or LESS than 28
+ - Normal weight more than 35 ; less than  25 
+- Overweight   more than 25 ; less than 15
+- Obese more than 20 ; less than 1
+
+```{r}
+matrix_2by2 <- function(bmi_cat, lr, ur) {
+  # over BMi, good engagement
+  og <- wt_gain %>% filter((bmi_category==bmi_cat) & 
+                              (recommend_obs == "rec") & 
+                              ( weight_gain > ur | weight_gain < lr)) %>% select(Dim_Patient) %>% distinct()
   
+  # within BMi, good engagement
+  wg <- wt_gain %>% filter((bmi_category==bmi_cat) & 
+                              (recommend_obs == "rec") & 
+                              (weight_gain <=ur | weight_gain>= lr)) %>% select(Dim_Patient) %>% distinct()
+  
+  # over BMi, bad engagement
+  ob <- wt_gain %>% filter((bmi_category==bmi_cat) & 
+                              (recommend_obs == "not_rec") & 
+                              ( weight_gain > ur | weight_gain < lr)) %>% select(Dim_Patient) %>% distinct()
+  
+  # within BMi, bad engagement
+  wb <- wt_gain %>% filter((bmi_category==bmi_cat) & 
+                              (recommend_obs == "not_rec") & 
+                             (weight_gain <= ur | weight_gain>= lr)) %>% select(Dim_Patient) %>% distinct()
+  
+  
+  MI <- matrix(c(dim(ob)[1], dim(wb)[1],  dim(og)[1], dim(wg)[1]), nrow = 2)
+  
+  dimnames(MI) <- list("BMI" = c("bmi_over","bmi_within"), "Engagemnt" = c("bad", "good"))
+  MI
+  return(MI)
+}
+```
+
+BMI underweight 
+```{r}
+MI <- matrix_2by2("Underweight", 28, 40)
+MI
+
+# proportion table
+prop.out <- prop.table(MI, margin = 1)
+
+#the null hypothesis that the proportions in both groups are the same. In addition it will provide a confidence interval for the difference in proportions.
+p.out <-prop.test(MI)
+
+print("difference in proportions")
+p.out$estimate[1] - p.out$estimate[2]
 
 
-#ggplotly(plot1)
+ print("For patients outside recommended range of BMi, we expect to observe 7 patients with bad engagement for every 55 patients with less engagement ")
+ 
+MASS::fractions(prop.out[1,1]/prop.out[1,2])
+
+print("Likewise in the within recommended range og BMI group, we expect to observe 2 patients with bad engagement for every 23 patients with less engagement")
+
+MASS::fractions(prop.out[2,1]/prop.out[2,2])
+
+
+# Percent increase = (Risk Ratio lower bound – 1) x 100
+# Percent decrease = (1 – Risk Ratio upper bound) x 100
+# Take odds ratio
+or.out <- oddsratio(MI, rev="b")
+or.out$measure
+```
+Odds of bad engagement are at least 47% higher for the outside recommended weight gain group. 
+
+
+BMI normal weight 
+```{r}
+MI <- matrix_2by2("Normal Weight", 25, 35)
+MI
+
+# proportion table
+prop.out <- prop.table(MI, margin = 1)
+
+#the null hypothesis that the proportions in both groups are the same. In addition it will provide a confidence interval for the difference in proportions.
+p.out <-prop.test(MI)
+p.out
+
+print("difference in proportions")
+p.out$estimate[1] - p.out$estimate[2]
+
+
+ print("For patients outside recommended range of BMi, we expect to observe 121 patients with bad engagement for every 1637 patients with less engagement ")
+ 
+MASS::fractions(prop.out[1,1]/prop.out[1,2])
+
+print("Likewise in the within recommended range of BMI group, we expect to observe 90 patients with bad engagement for every 1267 patients with less engagement")
+
+MASS::fractions(prop.out[2,1]/prop.out[2,2])
+
+
+# Percent increase = (Risk Ratio lower bound – 1) x 100
+# Percent decrease = (1 – Risk Ratio upper bound) x 100
+# Take odds ratio
+or.out <- oddsratio(MI, rev="b")
+or.out$measure
+```
+Odds of bad engagement are at least 81% higher for the outside recommended weight gain group. 
+
+
+BMI over weight 
+```{r}
+MI <- matrix_2by2("Overweight", 15, 25)
+MI
+
+# proportion table
+prop.out <- prop.table(MI, margin = 1)
+
+#the null hypothesis that the proportions in both groups are the same. In addition it will provide a confidence interval for the difference in proportions.
+p.out <-prop.test(MI)
+p.out
+
+print("difference in proportions")
+p.out$estimate[1] - p.out$estimate[2]
+
+ 
+MASS::fractions(prop.out[1,1]/prop.out[1,2])
+
+
+MASS::fractions(prop.out[2,1]/prop.out[2,2])
+
+
+# Percent increase = (Risk Ratio lower bound – 1) x 100
+# Percent decrease = (1 – Risk Ratio upper bound) x 100
+# Take odds ratio
+or.out <- oddsratio(MI, rev="b")
+or.out$measure
+```
+Odds of bad engagement are at least 81% higher for the outside recommended weight gain group. 
+
+BMI Obese
+```{r}
+MI <- matrix_2by2("Obese", 11, 20)
+MI
+
+# proportion table
+prop.out <- prop.table(MI, margin = 1)
+
+#the null hypothesis that the proportions in both groups are the same. In addition it will provide a confidence interval for the difference in proportions.
+p.out <-prop.test(MI)
+p.out
+
+print("difference in proportions")
+p.out$estimate[1] - p.out$estimate[2]
+
+ 
+MASS::fractions(prop.out[1,1]/prop.out[1,2])
+
+
+MASS::fractions(prop.out[2,1]/prop.out[2,2])
+
+
+# Percent increase = (Risk Ratio lower bound – 1) x 100
+# Percent decrease = (1 – Risk Ratio upper bound) x 100
+# Take odds ratio
+or.out <- oddsratio(MI, rev="b")
+or.out$measure
 ```
 
 
 
-## What is the change in weight for specific population groups (By customer group, by BMI category, by age) 
+
+
+Weight loss:
+```{r}
+
+wt_loss <- day_level_demo %>% filter(trimester %in% c("T3", "PP")) %>% 
+  group_by(Customer_Group, Dim_Patient, trimester)  %>% 
+  arrange(Dim_Patient,date) %>% 
+  filter( (row_number()==n() & trimester== "T3") | (row_number()==n() & trimester== "PP")) %>% 
+  ungroup() %>%  
+  group_by(Customer_Group, Dim_Patient) %>%
+  mutate(n = n()) %>%
+  filter(n>1) %>% arrange(Customer_Group, Dim_Patient, desc(trimester)) %>%
+  summarise(weight_loss = diff(wt_avg))
+
+wt_loss_groups <- wt_loss %>% group_by(Customer_Group) %>% summarise(avg_loss = mean(weight_loss))
+
+wt_loss_groups %>%
+  DT::datatable(
+    extensions = 'Buttons', 
+    options = list(dom = 'Bfrtip', 
+                   buttons = c('excel', "csv")))
+```
+      
+
+Age categories weight gain     
+```{r}
+age_wt_gain <- age %>% filter(trimester %in% c("T1", "T3")) %>% 
+  group_by(age_category, Dim_Patient, trimester)  %>% 
+  arrange(Dim_Patient,date) %>% 
+  filter( (row_number()==1 & trimester== "T1") | (row_number()==n() & trimester== "T3")) %>% 
+  ungroup() %>%  
+  group_by(age_category, Dim_Patient) %>%
+  mutate(n = n()) %>%
+  filter(n>1) %>% 
+  arrange(age_category, Dim_Patient, trimester) %>%
+  summarise(weight_gain = diff(wt_avg)) %>% 
+  group_by(age_category) %>% 
+  summarise(avg_weight_gain = mean(weight_gain))
+
+age_wt_gain %>%
+  DT::datatable(
+    extensions = 'Buttons', 
+    options = list(dom = 'Bfrtip', 
+                   buttons = c('excel', "csv")))
+
+```
+
+
+Age wt loss
+```{r}
+age_wt_loss <- age %>% filter(trimester %in% c("T3", "PP")) %>% 
+  group_by(age_category, Dim_Patient, trimester)  %>% 
+  arrange(Dim_Patient,date) %>% 
+  filter( (row_number()==n() & trimester== "T3") | (row_number()==n() & trimester== "PP")) %>% 
+  ungroup() %>%  
+  group_by(age_category, Dim_Patient) %>%
+  mutate(n = n()) %>%
+  filter(n>1) %>% arrange(age_category, Dim_Patient, desc(trimester)) %>%
+  summarise(weight_loss = diff(wt_avg)) %>%
+  group_by(age_category) %>% 
+  summarise(avg_weight_ = mean(weight_loss))
+
+
+age_wt_loss %>%
+  DT::datatable(
+    extensions = 'Buttons', 
+    options = list(dom = 'Bfrtip', 
+                   buttons = c('excel', "csv")))
+```
+
+BMI Cateogries
+
+Wt gain
+```{r}
+bmi_wt_gain <- bmi %>% filter(trimester %in% c("T1", "T3")) %>% 
+  group_by(bmi_category, Dim_Patient, trimester)  %>% 
+  arrange(Dim_Patient,date) %>% 
+  filter( (row_number()==1 & trimester== "T1") | (row_number()==n() & trimester== "T3")) %>% 
+  ungroup() %>%  
+  group_by(bmi_category, Dim_Patient) %>%
+  mutate(n = n()) %>%
+  filter(n>1) %>% 
+  arrange(bmi_category, Dim_Patient, trimester) %>%
+  summarise(weight_gain = diff(wt_avg)* (-1)) %>% 
+  group_by(bmi_category) %>% 
+  summarise(avg_weight_gain = mean(weight_gain), std_wt_gain = sd(weight_gain))
+
+bmi_wt_gain %>%
+  DT::datatable(
+    extensions = 'Buttons', 
+    options = list(dom = 'Bfrtip', 
+                   buttons = c('excel', "csv")))
+
+```
+
+
+```{r}
+
+
+```
+
+BMI wt loss
+```{r}
+bmi_wt_loss <- bmi %>% filter(trimester %in% c("T3", "PP")) %>% 
+  group_by(bmi_category, Dim_Patient, trimester)  %>% 
+  arrange(Dim_Patient,date) %>% 
+  filter( (row_number()==n() & trimester== "T3") | (row_number()==n() & trimester== "PP")) %>% 
+  ungroup() %>%  
+  group_by(bmi_category, Dim_Patient) %>%
+  mutate(n = n()) %>%
+  filter(n>1) %>% arrange(bmi_category, Dim_Patient, desc(trimester)) %>%
+  summarise(weight_loss = diff(wt_avg)) %>%
+  group_by(bmi_category) %>% 
+  summarise(avg_weight_ = mean(weight_loss))
+
+
+
+bmi_wt_loss %>%
+  DT::datatable(
+    extensions = 'Buttons', 
+    options = list(dom = 'Bfrtip', 
+                   buttons = c('excel', "csv")))
+
+```
+
+
+
+
+
+
+## Linear regression: check if weight changes with the age or bmi
+
+BMI and wt change is not correlated
+```{r}
+bmi <- bmi %>% group_by(Dim_Patient) %>% arrange(Dim_Patient, date) %>%
+  mutate(weight_diff = c(0,diff(wt_avg)))
+
+cor(bmi$bmi, bmi$weight_diff)
+
+ggplot(bmi, aes(x=bmi, y=weight_diff)) + 
+  geom_point()+
+  geom_smooth(method=lm)
+
+```
+
+
+Age and wt is not correlated
+```{r}
+
+age <- age %>% group_by(Dim_Patient) %>% arrange(Dim_Patient, date) %>%
+  mutate(weight_diff = c(0,diff(wt_avg)))
+
+
+cor(age$`Age_at_Activation_(years)`, age$weight_diff)
+
+ggplot(age, aes(x=`Age_at_Activation_(years)`, y=wt_avg)) + 
+  geom_point()+
+  geom_smooth(method=lm)
+
+```
+
 
 
