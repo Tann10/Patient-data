@@ -28,6 +28,8 @@ knitr::opts_chunk$set(warning = F)
 # can add quietly=T option to the require() function
 loadPkg = function(x) { if (!require(x,character.only=T, quietly =T)) { install.packages(x,dep=T,repos="http://cran.us.r-project.org"); if(!require(x,character.only=T)) stop("Package not found") } }
 
+# load crosstab function
+source("http://pcwww.liv.ac.uk/~william/R/crosstab.r")
 
 # Create the function.
 getmode <- function(v) {
@@ -48,6 +50,7 @@ loadPkg("plotly")
 loadPkg("lubridate")
 loadPkg("knitr")
 loadPkg("epitools")
+loadPkg("car")
 ```
 
 Reading data ..
@@ -77,6 +80,12 @@ day_level <- day_level %>% filter(Dim_Patient %in% gtr_3$Dim_Patient)
 length(unique(day_level$Dim_Patient))
 dim(day_level)
 
+day_level <-day_level %>% group_by(Dim_Patient) %>%
+  mutate( num_of_observ = n(),
+    # engagement = ifelse(num_of_observ >6, "good", "bad")
+    )
+
+
 #write.csv(day_level, "day_level_5_19.csv")
 
 g1 <- ggplot(gtr_3, aes(x=n)) + geom_histogram()
@@ -95,8 +104,8 @@ gtr_1 <- week_level %>% group_by(Dim_Patient) %>% count() %>% filter(n>1)
 week_level <- week_level %>% filter(Dim_Patient %in% gtr_1$Dim_Patient) 
 
 week_level <-week_level %>% group_by(Dim_Patient) %>%
-  mutate( n = n(),
-    recommend_obs = ifelse(n >=6, "rec", "not_rec"))
+  mutate( num_of_observ = n(),
+    engagement = ifelse(num_of_observ >6, "good", "bad"))
 
 length(unique(week_level$Dim_Patient))
 dim(week_level)
@@ -109,21 +118,27 @@ g1 <- ggplot(gtr_1, aes(x=n)) + geom_histogram()
 ggplotly(g1)
 ```
 
-Merge rec list with patient at a day level
-```{r}
-rec_list <- week_level %>% select(Dim_Patient, recommend_obs) %>% distinct()
 
-day_level_demo <- merge(day_level, rec_list, by= "Dim_Patient", all.x=T)
+Merge good list with patient at a day level
+```{r}
+good_list <- week_level %>% select(Dim_Patient, engagement) %>% distinct()
+
+day_level <- merge(day_level, good_list, by= "Dim_Patient", all.x=T)
 ```
 
 Total number of rows and columns are `r dim(week_level)` and total number of unique patients are `r length(unique(week_level$Dim_Patient))`
 
 
-Check first and last week difference in weights at a day_level
+Calculate wt gain by taking first entry of the patient and last week prior week 41
 ```{r}
 
 initial_wt <- day_level %>% group_by(Dim_Patient) %>% 
-  arrange(Dim_Patient, date) %>% filter(row_number()==1 | row_number()==n()) %>%  arrange(Dim_Patient, date) %>% mutate(weight_diff_tri = c(0,diff(wt_avg)), week_diff = c(0,diff(week)))
+  filter(week<=40) %>%
+  arrange(Dim_Patient, date) %>% filter(row_number()==1 | row_number()==n()) %>%  
+  mutate(n = n()) %>%
+  filter(n>1) %>%
+  arrange(Dim_Patient, date) %>%
+  summarise(weight_gain = diff(wt_avg))
 
 initial_wt %>%
   DT::datatable(
@@ -131,7 +146,6 @@ initial_wt %>%
     options = list(dom = 'Bfrtip', 
                    buttons = c('excel', "csv")))
 
-summary(initial_wt)
 ```
 
 
@@ -169,13 +183,223 @@ day_level_demo$bmi_category <- ifelse(day_level_demo$bmi <18.5, "Underweight",
 lessht <- day_level_demo %>% filter(`Height_(m)`<0.6)
 length(unique(lessht))
 ```
+
 ```{r}
-# check T3 drop  wt diff if < -9
+
+# weight gain = T1-T3
+weight_gain <- day_level_demo %>% 
+  group_by(Dim_Patient)  %>% 
+  arrange(Dim_Patient,date) %>% 
+  filter((row_number()==1 & trimester== "T1") | (row_number()==n() & trimester== "T3")) %>% 
+  mutate(n = n()) %>%
+  filter(n>1) %>% arrange(Dim_Patient, trimester) %>%
+  summarise(weight_gain = diff(wt_avg))
+
+day_level_demo <- merge(day_level_demo,initial_wt, by= "Dim_Patient", all.x = T)
+
+# create a categorical variable for bmi within and outside recommended range
+day_level_demo$bmi_flag <- ifelse(is.na(day_level_demo$weight_gain),NA,
+                                  ifelse((day_level_demo$bmi_category=="Underweight") & 
+                              (day_level_demo$weight_gain < 40) &  
+                                  (day_level_demo$weight_gain > 28), 1,
+                              ifelse((day_level_demo$bmi_category=="Normal Weight") &
+                                       (day_level_demo$weight_gain > 25) & 
+                                           (day_level_demo$weight_gain <35), 1,
+                                     ifelse((day_level_demo$bmi_category=="Overweight") &
+                                       (day_level_demo$weight_gain > 15) & 
+                                           (day_level_demo$weight_gain <25),1,
+                                       ifelse((day_level_demo$bmi_category=="Obese") &
+                                       (day_level_demo$weight_gain > 11) & 
+                                           (day_level_demo$weight_gain <20),1,0)))))
+
+# day_level_demo %>% filter((day_level_demo$bmi_category=="Overweight") &
+#                                        (day_level_demo$weight_gain > 15) & 
+#                                            (day_level_demo$weight_gain <25) & (Dim_Patient == "ref:Patient/Athena#13122|1966456"))
+
+# calculate wt difference
+day_level_demo <- day_level_demo %>% 
+  group_by(Dim_Patient)  %>% 
+  arrange(Dim_Patient,date) %>%
+  mutate(wt_diff = c(0, diff(wt_avg)))
+
+# cross tab
+crosstab(day_level_demo, col.vars = "bmi_flag", row.vars = "bmi_category", type = "f")
+
+#write.csv(day_level_demo, "day_level_demo_6_2.csv")
 ```
-## 1) How many total patients by: 
+
+
+Merge week level data
+```{r}
+week_level_demo <- merge(week_level, ht[,c("Dim_Patient", "Activated_At",
+                                         "Date_of_Birth", "Age_at_Activation_(years)", 
+                                         "Customer_Group", "Height_(m)")],
+                        by= "Dim_Patient", all.x = TRUE)
+
+# weight gain
+week_level_demo <- merge(week_level_demo, initial_wt, by= "Dim_Patient", all.x = T)
+
+# BMI
+week_level_demo <- merge(week_level_demo, init_wt[, c("Dim_Patient", "bmi")], by = "Dim_Patient", all.x = T)
+
+week_level_demo$bmi_category <- ifelse(week_level_demo$bmi <18.5, "Underweight", 
+                                      ifelse(week_level_demo$bmi<25, "Normal Weight",
+                                             ifelse(week_level_demo$bmi<30, "Overweight", 
+                                                           "Obese")))
+
+
+# create a categorical variable for bmi within and outside recommended range
+week_level_demo$bmi_flag <- ifelse(is.na(week_level_demo$weight_gain),NA,
+                                  ifelse((week_level_demo$bmi_category=="Underweight") & 
+                              (week_level_demo$weight_gain < 40) &  
+                                  (week_level_demo$weight_gain > 28), 1,
+                              ifelse((week_level_demo$bmi_category=="Normal Weight") &
+                                       (week_level_demo$weight_gain > 25) & 
+                                           (week_level_demo$weight_gain <35), 1,
+                                     ifelse((week_level_demo$bmi_category=="Overweight") &
+                                       (week_level_demo$weight_gain > 15) & 
+                                           (week_level_demo$weight_gain <25), 1,
+                                       ifelse((week_level_demo$bmi_category=="Obese") &
+                                       (week_level_demo$weight_gain > 11) & 
+                                           (week_level_demo$weight_gain <20),1,0)))))
+
+
+# calculate wt difference
+week_level_demo <- week_level_demo %>% 
+  group_by(Dim_Patient)  %>% 
+  arrange(Dim_Patient,week) %>%
+  mutate(wt_diff = c(0, diff(wt_avg)))
+
+#week_level_demo %>% filter((week_level_demo$bmi_category=="Obese"))
+
+#write.csv(week_level_demo, "week_level_demo_6_2.csv")
+
+```
+
+## Check the variation in BMI recommend range weight gains outside and within
+
+Class counts - 0 is outside bmi range and 1 is within bmi range
+```{r}
+sub_week <- week_level_demo %>% 
+  filter(!is.na(bmi_flag)) %>% 
+  filter(!is.na(bmi_category))
+
+count_sub_week <- sub_week %>% 
+  group_by(Dim_Patient, bmi_flag) %>% 
+  count()
+# check class bias
+table(count_sub_week$bmi_flag)
+
+# cross tab
+crosstab(sub_week, col.vars = "bmi_flag", row.vars = "bmi_category", type = "f")
+
+```
+
+Before performing t-test we need to verify if the following t-test assumptions are valid:
+
+Assumption1: Are the two samples independents? Yes
+
+Assumption2: Are the data from each of the 2 groups follow a normal distribution? shapiro.test() to compute Shapiro-Wilk test for each group of samples.
+
+```{r}
+
+bmi_out <- count_sub_week %>% filter(bmi_flag==0)
+hist(bmi_out$n)
+#shapiro.test(bmi_out$n)
+
+
+
+bmi_in <- count_sub_week %>% filter(bmi_flag==1)
+hist(bmi_in$n)
+#shapiro.test(bmi_in$n)
+```
+
+Can't perform Shapiro test as sample size is large
+//Shapiro test fails, that means data is not normally distributed, but the sample size is large enough (n //> 30), so we can ignore the distribution of the data and use parametric tests.
+
+Assumption3 - have same variance:
+```{r}
+# Assumption3 - have same variance:
+boxplot(n~bmi_flag, data = count_sub_week)
+res.ftest <- var.test(n~bmi_flag, data = count_sub_week)
+res.ftest
+
+```
+
+The p-value of F-test is p = 0.2127. It’s greater than the significance level alpha = 0.05. In conclusion, there is no significant difference between the variances of the two sets of data. Therefore, we can use the classic t-test which assume equality of the two variances
+
+```{r}
+
+#Wilcoxon  rank-sum  test non parametric test
+# t test
+ttest<- t.test(n~bmi_flag, data = count_sub_week)
+ttest
+```
+
+T test shows that the mean of the two samples is not same. 
+
+```{r}
+
+# 2: Are the data from each of the 2 groups follow a normal distribution? shapiro.test() to compute Shapiro-Wilk test for each group of samples.
+# 3 Do the two populations have the same variances?  F-test to test for homogeneity in variances. This can be performed with the function var.test() 
+
+# 
+# # Run ANOVA
+# anova_wt_bmi <- aov(weight_gain~bmi_flag, data = sub_week)
+# summary(anova_wt_bmi)
+
+# anova_wt_bmi
+```
+
+
+## Logistic regression
+
+Use number of observations (as a proxy to engagement) to find if recommended weight gain will be within the range or outside
+
+```{r}
+logit <- glm(bmi_flag~n, data=count_sub_week, family=binomial(link="logit"))
+summary(logit)
+```
+
+Frequency distribution of observations 
+```{r}
+hist(count_sub_week$n)
+```
+
+To make the results more interpretable, forming 3 classes of observations - low freq(0-6 weeks), moderate freq (6-15 weeks), high freq (15 onwards). 
+
+```{r}
+count_sub_week$obs_categories <- ifelse(count_sub_week$n <5,"Low freq", 
+                                        ifelse(count_sub_week$n >=5 & count_sub_week$n <=15,"Moderate freq",
+                                               "High freq"))
+table(count_sub_week$obs_categories)
+table(count_sub_week$bmi_flag)
+
+
+crosstab(count_sub_week, row.vars = "bmi_flag", col.vars = "obs_categories", type = "f")
+```
+
+
+Now perform logistic regression with the observation classes.
+```{r}
+logit <- glm(bmi_flag~obs_categories, data=count_sub_week, family=binomial(link="logit"))
+summary(logit)
+```
+
+having low freq(less engagement), versus high freq(more engagement), changes the log odds of weight gain within the recommended range by -1.37104 similarly it changes by -0.42205 in case of moderate freq
+
+In other words, log of odds ratio to be within bmi range decreases by 1.37 when frequency counts changes from high class to low class.
+
+Odds ratio: 
+```{r}
+exp(coef(logit))
+```
+
+To make the results more interpretable, forming 3 classes of observations - low freq(0-4 weeks), moderate freq (4-10 weeks), high freq (10 onwards). 
+
+
+## How many total patients by: 
 ###       - Practice group 
-       - Age bracket (5 years)
-       - BMI category (less than 25 ; 25.1 - 29.9 ; 30-34.9 ; 35.0-39.9 ; 40-59.9 ; 60 -over)
        
 ```{r}
 # By practice group
@@ -268,7 +492,7 @@ ggplotly(plt1)
 ```
 
 
-## 2) How often did each patient enter weights:
+## How often did each patient enter weights:
         - Entire population 
          - Practice group 
        - Age bracket (5 years)
@@ -372,7 +596,7 @@ q2_bmi %>%
                    buttons = c('excel', "csv")))
 ```
 
-## 3) What is the average starting time (I.e Gestational age at first entry ) By: 
+## What is the average starting time (I.e Gestational age at first entry ) By: 
     --same as previous 
 
 ```{r}
@@ -402,7 +626,7 @@ q3_bmi <- bmi %>% group_by(bmi_category, Dim_Patient) %>%
   summarise(mean_week = mean.Date(start_week))
 ```
 
-## 4) What is the  length of involvement (i.e difference of gestational age) By: 
+## What is the  length of involvement (i.e difference of gestational age) By: 
     -- same as previous 
     
 ```{r}
@@ -443,7 +667,7 @@ q4_bmi <- bmi %>% group_by(bmi_category, Dim_Patient) %>%
 
 ```
 
-## 5) Weight difference at the start - finish of each trimester by (may be hard for people with only 1 entry per trimester): 
+## Weight difference at the start - finish of each trimester by (may be hard for people with only 1 entry per trimester): 
       - Whole group 
       - Practice group
       - Age 
@@ -530,7 +754,111 @@ q5_bmi %>%
                    buttons = c('excel', "csv")))
 ```
 
-## 6) weight difference from the first observation to the last observation (IN TRIMESTER 3) 
+
+Anova in T2 to change if the bmi groups have different means
+```{r}
+q5 <- bmi %>% filter(trimester %in% c("T2", "T3")) %>%
+  group_by(bmi_category, Dim_Patient, trimester)  %>% 
+ arrange(Dim_Patient, date) %>% filter(row_number()==1 | row_number()==n()) %>% 
+  mutate(n = n()) %>%
+  filter(n>1) %>%
+  summarise(`Age_at_Activation_(years)` = min(`Age_at_Activation_(years)`),
+    weight_diff = diff(wt_avg), 
+            week_diff = diff(week),
+            rate_of_wtgain = ifelse(is.infinite(abs(weight_diff/week_diff)), 1, weight_diff/week_diff)) %>% filter(!is.na(rate_of_wtgain))
+
+count <- bmi %>%  group_by(Dim_Patient, trimester) %>% count()
+  
+q5 <- merge(q5, count, by = c("Dim_Patient", "trimester"), all.x = T)
+```
+
+Frequency distribution of rate of weight gain in T2 and T3
+```{r}
+hist(q5$rate_of_wtgain)
+```
+
+Perform anova to test if the bmi groups have different means for rate of weight gain
+
+```{r}
+tri <- q5 %>% filter(trimester=="T2")
+Anova(lm(rate_of_wtgain ~ bmi_category, data=tri))
+```
+Anova test shows that there is a significat diff within the bmi groups when rate of weight is used as a response variable. The same is observed in case of T3
+
+```{r}
+tri <- q5 %>% filter(trimester=="T3")
+Anova(lm(rate_of_wtgain ~ bmi_category, data=tri))
+```
+
+Following table shows the interaction between bmi category and trimester on the rate of weight gain has  a significant effect. As well as, bmi category and trimester variables have a significant impact on the rate of weight gain.
+
+```{r}
+Anova(lm(rate_of_wtgain ~bmi_category*trimester + n, data=q5))
+```
+
+Lets build a linear regression model for rate of wt gain as a response variable and bmi category, trimester, age as predictors.
+```{r}
+model <- lm(rate_of_wtgain ~ bmi_category + trimester + n + `Age_at_Activation_(years)`, data=q5)
+summary(model)
+```
+Model shows that bmi categories, trimester, number of observations and age are statistically significant. The interaction between bmi category and trimester is not significant. 
+
+The R square value shows how much the model explains the variability around the mean in the response variable. In this case, the R sqaure low ~2.9% Hence the model with the variables bmi categories, trimester, number of observations and age does not fit well with the data.
+
+
+To understand what does it mean when only category is a significant variable and what to do in that case refer: https://www.listendata.com/2016/07/insignificant-levels-of-categorical-variable.html
+
+Coef can be interpreted as, if the bmi group changes from normal weight to over-weight group the rate of wt gain changes by -0.07
+Logsitic regression to predict bmi groups within the recommended rate of weight gain:
+```{r}
+# create a categorical variable for bmi within and outside recommended range
+q5$bmi_flag <- ifelse(is.na(q5$rate_of_wtgain),NA,
+                                  ifelse((q5$bmi_category=="Underweight") & 
+                              (q5$rate_of_wtgain >=1) &  
+                                  (q5$rate_of_wtgain <=1.3), 1,
+                              ifelse((q5$bmi_category=="Normal Weight") & 
+                              (q5$rate_of_wtgain >=0.8) &  
+                                  (q5$rate_of_wtgain <=1), 1,
+                                     ifelse((q5$bmi_category=="Overweight") & 
+                              (q5$rate_of_wtgain >=0.5) &  
+                                  (q5$rate_of_wtgain <=0.7), 1,
+                                       ifelse((q5$bmi_category=="Obese") & 
+                              (q5$rate_of_wtgain >=0.4) &  
+                                  (q5$rate_of_wtgain <=0.6), 1,0)))))
+table(q5$bmi_flag)
+crosstab(q5, row.vars = "bmi_flag", col.vars = "bmi_category", type = "f")
+```
+
+```{r}
+
+  
+q5$obs_categories <- ifelse(q5$n <=6,"Low freq", 
+                                        ifelse(q5$n > 6 & count_sub_week$n <=15,"Moderate freq",
+                                               "High freq"))
+table(q5$obs_categories)
+
+crosstab(q5, row.vars = "bmi_flag", col.vars = "obs_categories", type = "f")
+```
+
+```{r}
+
+Anova(lm(rate_of_wtgain ~ obs_categories, data=q5))
+```
+Anova between rate of wt gain and observation categories show that all the categories have different mean values. 
+
+Logistic regression between bmi flag and observation categories show that the observation categories are not the significant variables for the classification model (does not have impact when it predict of the classes)
+
+The coef can be intrepreted as a patient low freq(less engagement), versus high freq(more engagement), changes the log odds of rate of weight gain within the recommended range by -0.07 similarly it changes by 0.07 in case of moderate freq. 
+
+```{r}
+logit <- glm(bmi_flag~obs_categories, data=q5, family=binomial(link="logit"))
+summary(logit)
+
+```
+
+
+
+##  weight difference from the first observation to the last observation (IN TRIMESTER 3) 
     by: 
       - same as above 
       
@@ -580,7 +908,7 @@ q6_bmi %>%
                    buttons = c('excel', "csv")))
 ```
 
-## 7) Weight difference from last entry in T3 to last entry in PP by: 
+## Weight difference from last entry in T3 to last entry in PP by: 
      - same as above 
      
      
@@ -690,6 +1018,7 @@ anova_wt_age <- aov(weight_diff ~ age_category, data = age)
 summary(anova_wt_age)
 anova_wt_age
 ```
+
 As the p value is low we reject the null hypothesis, which represents the groups are different from each other. Further we us tukeyhsd to check which groups are statistically different from each other
 
 ```{r}
@@ -722,7 +1051,7 @@ tukey
 Apart from overweight and normal weight, all groups are statistically different. 
 
 
-## 8) Can we get a rate of weight gain (T3-T1) for each group ; and rate of weight loss for PP (PP-T3) 
+## Can we get a rate of weight gain (T3-T1) for each group ; and rate of weight loss for PP (PP-T3) 
       - Perhaps here we can interpolate for PP (only 6 weeks)???? 
       
 Weight Gain:      
@@ -745,11 +1074,11 @@ wt_gain_groups %>%
     extensions = 'Buttons', 
     options = list(dom = 'Bfrtip', 
                    buttons = c('excel', "csv")))
-wt_gain = merge(wt_gain, rec_list, by = "Dim_Patient", all.x = T)
+wt_gain = merge(wt_gain, good_list, by = "Dim_Patient", all.x = T)
 
 ```
 
-## We want to know the behavior of outliers (i.e women who gained MORE or LESS than the recommended weight gain based on BMI)  This would be T1 - T3 (so over the whole pregnancy)
+## We want to know the behavior of outliers (i.e women who gained MORE or LESS than the goodommended weight gain based on BMI)  This would be T1 - T3 (so over the whole pregnancy)
  - For underweight MORE than 40 or LESS than 28
  - Normal weight more than 35 ; less than  25 
 - Overweight   more than 25 ; less than 15
@@ -759,22 +1088,22 @@ wt_gain = merge(wt_gain, rec_list, by = "Dim_Patient", all.x = T)
 matrix_2by2 <- function(bmi_cat, lr, ur) {
   # over BMi, good engagement
   og <- wt_gain %>% filter((bmi_category==bmi_cat) & 
-                              (recommend_obs == "rec") & 
+                              (engagement == "good") & 
                               ( weight_gain > ur | weight_gain < lr)) %>% select(Dim_Patient) %>% distinct()
   
   # within BMi, good engagement
   wg <- wt_gain %>% filter((bmi_category==bmi_cat) & 
-                              (recommend_obs == "rec") & 
+                              (engagement == "good") & 
                               (weight_gain <=ur | weight_gain>= lr)) %>% select(Dim_Patient) %>% distinct()
   
   # over BMi, bad engagement
   ob <- wt_gain %>% filter((bmi_category==bmi_cat) & 
-                              (recommend_obs == "not_rec") & 
+                              (engagement == "bad") & 
                               ( weight_gain > ur | weight_gain < lr)) %>% select(Dim_Patient) %>% distinct()
   
   # within BMi, bad engagement
   wb <- wt_gain %>% filter((bmi_category==bmi_cat) & 
-                              (recommend_obs == "not_rec") & 
+                              (engagement == "bad") & 
                              (weight_gain <= ur | weight_gain>= lr)) %>% select(Dim_Patient) %>% distinct()
   
   
@@ -801,11 +1130,11 @@ print("difference in proportions")
 p.out$estimate[1] - p.out$estimate[2]
 
 
- print("For patients outside recommended range of BMi, we expect to observe 7 patients with bad engagement for every 55 patients with less engagement ")
+ print("For patients outside recommended range of BMi, we expect to observe 7 patients with bad engagement for every 55 patients with good engagement ")
  
 MASS::fractions(prop.out[1,1]/prop.out[1,2])
 
-print("Likewise in the within recommended range og BMI group, we expect to observe 2 patients with bad engagement for every 23 patients with less engagement")
+print("Likewise in the within recommended range og BMI group, we expect to observe 2 patients with bad engagement for every 23 patients with good engagement")
 
 MASS::fractions(prop.out[2,1]/prop.out[2,2])
 
@@ -816,7 +1145,7 @@ MASS::fractions(prop.out[2,1]/prop.out[2,2])
 or.out <- oddsratio(MI, rev="b")
 or.out$measure
 ```
-Odds of bad engagement are at least 47% higher for the outside recommended weight gain group. 
+Odds of bad engagement are at least 47% higher for the outside goodommended weight gain group. 
 
 
 BMI normal weight 
@@ -835,11 +1164,11 @@ print("difference in proportions")
 p.out$estimate[1] - p.out$estimate[2]
 
 
- print("For patients outside recommended range of BMi, we expect to observe 121 patients with bad engagement for every 1637 patients with less engagement ")
+ print("For patients outside recommended range of BMi, we expect to observe 121 patients with bad engagement for every 1637 patients with good engagement ")
  
 MASS::fractions(prop.out[1,1]/prop.out[1,2])
 
-print("Likewise in the within recommended range of BMI group, we expect to observe 90 patients with bad engagement for every 1267 patients with less engagement")
+print("Likewise in the within recommended range of BMI group, we expect to observe 90 patients with bad engagement for every 1267 patients with good engagement")
 
 MASS::fractions(prop.out[2,1]/prop.out[2,2])
 
@@ -850,7 +1179,7 @@ MASS::fractions(prop.out[2,1]/prop.out[2,2])
 or.out <- oddsratio(MI, rev="b")
 or.out$measure
 ```
-Odds of bad engagement are at least 81% higher for the outside recommended weight gain group. 
+Odds of bad engagement are at least 81% higher for the outside goodommended weight gain group. 
 
 
 BMI over weight 
@@ -881,7 +1210,7 @@ MASS::fractions(prop.out[2,1]/prop.out[2,2])
 or.out <- oddsratio(MI, rev="b")
 or.out$measure
 ```
-Odds of bad engagement are at least 81% higher for the outside recommended weight gain group. 
+Odds of bad engagement are at least 81% higher for the outside goodommended weight gain group. 
 
 BMI Obese
 ```{r}
